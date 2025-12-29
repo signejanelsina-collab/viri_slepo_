@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ziemassvētku atskaite — sniegpārslas fonā</title>
+  <style>
+    :root{
+      --accent: #ffcf66;
+      --text: #ffffff;
+      --muted: rgba(255,255,255,0.85);
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%}
+    body{
+      font-family: system-ui, -apple-system, "Playfair Display", Shadows Into Light Two, "Playfair Display", Shadows Into Light Two;
+      color:var(--text);
+      background-color:#071028;
+      min-height:400vh;
+      overflow:hidden;
+    }
+
+    /* Fona attēls */
+    .bg{
+      position:fixed;inset:0;z-index:0;background-image: url('https://images.unsplash.com/photo-1482192596544-9eb780fc7f66?auto=format&fit=crop&w=1800&q=80');
+      background-size:cover;background-position:center center;filter:contrast(0.95) saturate(0.9);
+    }
+
+    /* Viegls tumšs pārklājums, lai teksts būtu salasāmāks */
+    .bg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg, rgba(2,7,18,0.45), rgba(6,12,28,0.55));}
+
+    /* Canvas sniegam (pa virsu attēlam, zem satura) */
+    #snowCanvas{position:fixed;inset:0;z-index:1;pointer-events:none}
+
+    main{position:relative;z-index:2;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
+
+    .card{
+      width:100%;max-width:1280px;background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+      border-radius:20px;padding:2rem;border:1px solid rgba(255,255,255,0.06);backdrop-filter: blur(6px);
+      box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+      text-align:center;color:var(--muted)
+    }
+
+    h1{font-size:72pt;color:var(--text);letter-spacing:0.04em;text-transform:uppercase;margin-bottom:.25rem}
+    .subtitle{margin-bottom:1.2rem;color:var(--muted)}
+
+    .timer-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1rem}
+    @media (max-width:720px){.timer-grid{grid-template-columns:repeat(2,1fr)}}
+
+    .time-card{background:rgba(8,16,40,0.55);padding:1rem;border-radius:12px;border:1px solid rgba(255,255,255,0.04)}
+    .time-value{font-weight:700;font-size:2.2rem;color:var(--text)}
+    .time-label{text-transform:uppercase;font-size:.8rem;color:var(--muted);margin-top:.2rem}
+
+    .message{display:none;margin-top:1rem;font-weight:700;color:var(--accent);font-size:1.3rem}
+    .message.visible{display:block;animation:pop .7s ease-out}
+    @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.96)}to{opacity:1;transform:none}}
+
+    .footer{margin-top:.6rem;font-size:.85rem;color:rgba(255,255,255,0.7)}
+
+    /* Reduce motion */
+    @media (prefers-reduced-motion: reduce){
+      #snowCanvas{display:none}
+    }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <canvas id="snowCanvas" aria-hidden="true"></canvas>
+
+  <main>
+    <section class="card" role="region" aria-labelledby="title">
+      <h1 id="title">Līdz vīru slēpošanas braucienam tikai...</h1>
+
+      <div id="timer" class="timer-grid" aria-live="polite">
+        <div class="time-card"><div id="days" class="time-value">0</div><div class="time-label">dienas</div></div>
+        <div class="time-card"><div id="hours" class="time-value">00</div><div class="time-label">stundas</div></div>
+        <div class="time-card"><div id="minutes" class="time-value">00</div><div class="time-label">minūtes</div></div>
+        <div class="time-card"><div id="seconds" class="time-value">00</div><div class="time-label">sekundes</div></div>
+      </div>
+
+      <p id="christmasMsg" class="message" aria-live="polite">Atskaite pabeigta!</p>
+    </section>
+  </main>
+
+  <script>
+    // -- Atskaite līdz 24.01.2026 00:00 (Rīgas laiks) --
+
+    // Mērķa datums: 24.01.2026. plkst. 00:00:00 pēc Rīgas laika
+    const TARGET = { y: 2026, m: 1, d: 24, hh: 0, mm: 0, ss: 0 }; // m = 1..12
+
+    let rigaOffsetMs = 0;          // rigaNow - localNow, determined in init
+    let targetTimestampMs = null;  // UTC timestamp (ms) for TARGET at Riga local time
+
+    const dayMs = 24*60*60*1000, hourMs = 60*60*1000, minMs = 60*1000, secMs = 1000;
+
+    const daysEl = document.getElementById('days');
+    const hoursEl = document.getElementById('hours');
+    const minutesEl = document.getElementById('minutes');
+    const secondsEl = document.getElementById('seconds');
+    const msgEl = document.getElementById('christmasMsg');
+
+    // Inicializācija: mēģina iegūt Rīgas laiku no worldtimeapi.org
+    async function initRigaTime(){
+      try {
+        const resp = await fetch('https://worldtimeapi.org/api/timezone/Europe/Riga');
+        if (!resp.ok) throw new Error('API error');
+        const j = await resp.json();
+
+        // `datetime` ir ISO string ar ofset, piemēram: 2025-12-01T12:34:56.789+02:00
+        const rigaNow = new Date(j.datetime);
+        rigaOffsetMs = rigaNow.getTime() - Date.now();
+
+        // Parsē pašreizējo UTC nobīdi no `utc_offset`, piemēram '+02:00'
+        let utcOffset = j.utc_offset || j.utcOffset || '+02:00';
+        const m = utcOffset.match(/([+-])(\d{2}):(\d{2})/);
+        let offsetMs = 0;
+        if (m) {
+          const sign = m[1] === '+' ? 1 : -1;
+          const oh = parseInt(m[2],10);
+          const om = parseInt(m[3],10);
+          offsetMs = sign * ((oh * 60 + om) * 60 * 1000);
+        }
+
+        // UTC timestamp mērķim (00:00 Rīgas vietējā laikā): Date.UTC - offset
+        targetTimestampMs =
+          Date.UTC(TARGET.y, TARGET.m - 1, TARGET.d, TARGET.hh, TARGET.mm, TARGET.ss, 0) - offsetMs;
+
+        return;
+      } catch (e) {
+        console.warn('Neizdevās saņemt Rīgas laiku no API, izmantos ierīces laiku:', e);
+        rigaOffsetMs = 0;
+
+        // fallback: izmanto ierīces laiku, pieņemot, ka lietotāja timezone ir pareizs
+        const localNow = new Date();
+        const offsetMs = localNow.getTimezoneOffset() * 60 * 1000; // min -> ms (pozitīvs ja aiz UTC)
+        targetTimestampMs =
+          Date.UTC(TARGET.y, TARGET.m - 1, TARGET.d, TARGET.hh, TARGET.mm, TARGET.ss, 0) + offsetMs;
+
+        return;
+      }
+    }
+
+    function updateCountdown(){
+      if (targetTimestampMs === null) return; // not initialized yet
+
+      // “tagad” Rīgā (vai fallback gadījumā: ierīces laiks)
+      const nowRigaMs = Date.now() + rigaOffsetMs;
+      const diff = targetTimestampMs - nowRigaMs;
+
+      if (diff <= 0){
+        daysEl.textContent = '0';
+        hoursEl.textContent = '00';
+        minutesEl.textContent = '00';
+        secondsEl.textContent = '00';
+        document.getElementById('timer').style.display = 'none';
+        msgEl.classList.add('visible');
+        clearInterval(window.cntInterval);
+        return;
+      }
+
+      const days = Math.floor(diff / dayMs);
+      const hours = Math.floor((diff % dayMs) / hourMs);
+      const mins = Math.floor((diff % hourMs) / minMs);
+      const secs = Math.floor((diff % minMs) / secMs);
+
+      daysEl.textContent = String(days);
+      hoursEl.textContent = String(hours).padStart(2,'0');
+      minutesEl.textContent = String(mins).padStart(2,'0');
+      secondsEl.textContent = String(secs).padStart(2,'0');
+    }
+
+    // Inicializē Rīgas laiku un pēc tam sāk atjaunināt atskaiti
+    initRigaTime().then(() => {
+      updateCountdown();
+      window.cntInterval = setInterval(updateCountdown, 1000);
+    });
+
+    // -- Sniega animācija canvas --
+    (function snow(){
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      const canvas = document.getElementById('snowCanvas');
+      const ctx = canvas.getContext('2d');
+
+      let W = window.innerWidth;
+      let H = window.innerHeight;
+      let DPR = Math.max(1, window.devicePixelRatio || 1);
+
+      function resize(){
+        W = window.innerWidth; H = window.innerHeight; DPR = Math.max(1, window.devicePixelRatio || 1);
+        canvas.width = Math.floor(W * DPR);
+        canvas.height = Math.floor(H * DPR);
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+        ctx.setTransform(DPR,0,0,DPR,0,0);
+      }
+
+      window.addEventListener('resize', resize);
+      resize();
+
+      // create flakes based on viewport
+      const baseCount = Math.round(Math.min(180, Math.max(40, W / 8)));
+      const flakes = [];
+
+      function rand(min,max){ return Math.random()*(max-min)+min }
+
+      for (let i=0;i<baseCount;i++){
+        flakes.push({
+          x: Math.random()*W,
+          y: Math.random()*H - H,
+          r: rand(1.8,6.5),
+          d: rand(0.5,1.6),
+          swing: rand(0.5,2.5),
+          swingPhase: Math.random()*Math.PI*2,
+          opacity: rand(0.35,0.95)
+        });
+      }
+
+      let last = performance.now();
+
+      function draw(now){
+        const dt = (now - last) / 1000; last = now;
+        ctx.clearRect(0,0,W,H);
+
+        for (let f of flakes){
+          // vertical speed depends on d and radius
+          f.y += (40 * f.d) * dt * (1 + f.r/6);
+          f.x += Math.sin((now/1000)*f.swing + f.swingPhase) * (f.swing/2) * dt * 40;
+
+          if (f.y - f.r > H){
+            f.y = -10 - Math.random()*40;
+            f.x = Math.random()*W;
+          }
+
+          ctx.beginPath();
+          ctx.fillStyle = 'rgba(255,255,255,' + f.opacity + ')';
+          ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
+          ctx.fill();
+        }
+
+        requestAnimationFrame(draw);
+      }
+
+      requestAnimationFrame(draw);
+    })();
+  </script>
+</body>
+</html>
